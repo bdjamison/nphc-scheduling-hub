@@ -1,0 +1,1 @@
+{"routes":[{"route":"/api/approvals*","allowedRoles":["approver"]},{"route":"/api/admin*","allowedRoles":["approver"]}],"navigationFallback":{"rewrite":"/index.html","exclude":["/api/*","/.auth/*","/assets/*"]},"responseOverrides":{"401":{"redirect":"/.auth/login/aad?post_login_redirect_uri=/"}}}
