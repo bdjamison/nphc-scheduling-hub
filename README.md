@@ -68,3 +68,10 @@ All authenticated users assigned the `approver` Static Web Apps role have equal 
 - History is loaded from the existing approver-protected `/api/approvals` endpoint; it is not exposed through the public calendar endpoint. No new environment variables or Azure tables are required.
 - Existing approve, decline, revoke, email, and public calendar privacy workflows are retained.
 - **Before production use:** verify GitHub Actions build and test approver-only history, all filters, CSV export, and revocation. History filtering/pagination are client-side; a future server-side paginated endpoint is recommended if records grow large.
+
+
+## Recurring reservations (2026-10-30 update)
+
+The request form supports a one-year maximum date range, any combination of weekdays, and distinct 30-minute time slots for each weekday. `POST /api/series/availability` previews all occurrences and returns conflicting dates; `POST /api/series/requests` creates a linked series of dated reservations. `POST /api/series/decision` approves, declines, or revokes eligible series occurrences (approver role required). The existing `/api/approvals/decision` endpoint revokes a single occurrence.
+
+**Operational limitations:** Azure Tables cannot commit a multi-partition series atomically. The series submission uses compensating rollback on failure, and a series decision may partially complete during concurrency or an outage; the endpoint returns an explicit conflict with progress and the approver should inspect History before retrying. Test with a small series before broad use. Recurrence availability checks across a full year may be slow. Existing 48-hour expiration is lazy (triggered by reads), not a scheduled timer. The existing 18-month booking horizon still applies to each occurrence. Do not merge to production without running the Vite build and exercising the API against a test environment.
