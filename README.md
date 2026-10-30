@@ -59,3 +59,12 @@ All authenticated users assigned the `approver` Static Web Apps role have equal 
 - Expiration updates reservation status with ETag checking before releasing owned slots.
 
 **Deployment:** Upload the changed files to the existing GitHub repository, keeping paths unchanged. Review the GitHub Actions build/deployment, then test with a dedicated reservation before using with real bookings. This package has not been deployed to Azure or integration-tested against your production storage.
+
+## Howard County branding and approvals history (October 2026)
+
+- Header uses the user-provided NPHC emblem (`public/nphc-logo.png`), labeled Howard County, Maryland.
+- The approver dashboard has **Current Requests** and **History** tabs.
+- History supports reservation-date range, resource, requesting organization, requesting person's name/email, and status filters. Filtered results can be exported as CSV; 20 records display per page.
+- History is loaded from the existing approver-protected `/api/approvals` endpoint; it is not exposed through the public calendar endpoint. No new environment variables or Azure tables are required.
+- Existing approve, decline, revoke, email, and public calendar privacy workflows are retained.
+- **Before production use:** verify GitHub Actions build and test approver-only history, all filters, CSV export, and revocation. History filtering/pagination are client-side; a future server-side paginated endpoint is recommended if records grow large.
