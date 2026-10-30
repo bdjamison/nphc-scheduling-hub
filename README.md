@@ -75,3 +75,29 @@ All authenticated users assigned the `approver` Static Web Apps role have equal 
 The request form supports a one-year maximum date range, any combination of weekdays, and distinct 30-minute time slots for each weekday. `POST /api/series/availability` previews all occurrences and returns conflicting dates; `POST /api/series/requests` creates a linked series of dated reservations. `POST /api/series/decision` approves, declines, or revokes eligible series occurrences (approver role required). The existing `/api/approvals/decision` endpoint revokes a single occurrence.
 
 **Operational limitations:** Azure Tables cannot commit a multi-partition series atomically. The series submission uses compensating rollback on failure, and a series decision may partially complete during concurrency or an outage; the endpoint returns an explicit conflict with progress and the approver should inspect History before retrying. Test with a small series before broad use. Recurrence availability checks across a full year may be slow. Existing 48-hour expiration is lazy (triggered by reads), not a scheduled timer. The existing 18-month booking horizon still applies to each occurrence. Do not merge to production without running the Vite build and exercising the API against a test environment.
+
+## Public reservation security — configuration required
+
+**Do not deploy without configuring these Azure Static Web App application settings:**
+
+- `EMAIL_VERIFY_SECRET`: generate a new random 32+ byte secret (e.g. `openssl rand -hex 32`). Keep server-side only. Changing it invalidates previously issued verification tokens.
+- Existing `ACS_CONNECTION_STRING`, `MAIL_FROM`, `STORAGE_CONNECTION_STRING`, `PUBLIC_BASE_URL` must remain set. `PUBLIC_BASE_URL` must match the actual browser hostname used for Turnstile validation, without a trailing path.
+
+The security configuration endpoint reports `enabled:false` until required secrets are configured; submission endpoints fail closed when no valid email proof is supplied. Verify the sender email domain in Azure Communication Services.
+
+The new Azure Table `NphcSecurity` stores hashed verification codes, retry counts and rate-limit records. Six-digit codes expire after 10 minutes, have 5 tries, and produce a 30-minute signed proof bound to the email. Limits: 3 code sends/email/hour, 10 verification attempts/email/hour, 5 submissions/email/day, 3 pending reservations/email, one pending recurring series/email, and 52 occurrences maximum per public recurring request. These are application limits, not a replacement for edge/WAF IP rate limiting or transaction-level aggregate quota enforcement. Existing reservations remain unchanged.
+
+**Important operational limitations:** Rate-limit records are retained unless cleaned up; schedule a retention policy. Rate limiting is per email, not IP, so attackers can rotate addresses. Concurrent requests can race between quota check and slot insertion; for stronger abuse controls, add edge rate limiting and transactional quotas. Email verification confirms inbox access, not organization affiliation. Public availability queries are still anonymous; they do not reserve rooms.
+
+### Suggested smoke tests
+
+1. Confirm `GET /api/security/config` reports enabled and a public site key (never a secret).
+2. Attempt POST `/api/requests` without a verification token; expect an error and no slot hold.
+4. Submit a single reservation and confirm pending approval and calendar redirect.
+5. Test recurring reservations and verify the 52-occurrence cap is communicated to the requester.
+6. Verify 3 sends/hour, 5 wrong code attempts, 5 submissions/day, and 3 pending reservation limits.
+7. Confirm existing approver approval/revocation and email notifications still work.
+
+
+## Public reservation security (email verification, no CAPTCHA)
+Configure `EMAIL_VERIFY_SECRET` with a strong random secret (32+ bytes), and retain `ACS_CONNECTION_STRING`, `MAIL_FROM`, `STORAGE_CONNECTION_STRING`, and `PUBLIC_BASE_URL`. Cloudflare Turnstile is not used or required. Public requests require a six-digit email verification code, with server-side request limits. Email-only controls cannot prevent distributed attacks or attackers with multiple addresses; add IP/network rate limiting before broad public use.
