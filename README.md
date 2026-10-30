@@ -49,3 +49,13 @@ All authenticated users assigned the `approver` Static Web Apps role have equal 
 - Expired holds currently use lazy cleanup and are not guaranteed to release at precisely 48 hours until a scheduled cleanup is added.
 - Do not treat the app as production hardened until CAPTCHA/rate limiting, retention policy, email failure monitoring, and concurrent approval/expiration edge cases are addressed.
 - Never commit storage connection strings or email credentials to GitHub.
+
+## October 2026 enhancement package
+
+- Approvers may approve, decline, or revoke approved reservations with optional comments. Decisions notify the requester.
+- Revocation retains the reservation record and releases only slots still owned by that reservation.
+- Calendar API returns requester/event details only for authenticated users with the `approver` role. Public visitors receive only room, date, time, and `Blocked`.
+- Calendar now includes Day, Week, and Month views and Maryland-flag-inspired styling.
+- Expiration updates reservation status with ETag checking before releasing owned slots.
+
+**Deployment:** Upload the changed files to the existing GitHub repository, keeping paths unchanged. Review the GitHub Actions build/deployment, then test with a dedicated reservation before using with real bookings. This package has not been deployed to Azure or integration-tested against your production storage.
