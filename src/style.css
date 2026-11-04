@@ -27,3 +27,6 @@ header{border-bottom:6px solid #c62635}.logo{color:#e3b51b;border-color:#e3b51b}
 
 /* Organization founding colors are set inline from the foundingColors palette. */
 .observance-founding{border-left-width:5px;border-left-style:solid}
+
+/* Juneteenth: Black, Red, Green & Gold. Informational; never blocks reservations. */
+.observance-federal.observance-juneteenth{background:#111111;color:#F2C94C;border-left:5px solid #C52233;border-right:5px solid #168446;border-bottom:3px solid #F2C94C;font-weight:700}
