@@ -61,17 +61,31 @@ const occurrencePlan=b=>{
   const first=DateTime.fromISO(b.rangeStart,{zone:TZ});
   const last=DateTime.fromISO(b.rangeEnd,{zone:TZ});
   if(!first.isValid||!last.isValid||first.toISODate()!==b.rangeStart||last.toISODate()!==b.rangeEnd||last<first||last>first.plus({years:1}))throw Error('Choose a date range of at most one calendar year.');
-  if(!Array.isArray(b.days)||!b.days.length||b.days.length>7)throw Error('Choose at least one weekday.');
-  const rules=new Map();
-  for(const rule of b.days){
-    if(!WEEKDAYS.includes(rule.day)||rules.has(rule.day))throw Error('Invalid or duplicate weekday');
-    if(!/^\d{2}:\d{2}$/.test(rule.start)||!/^\d{2}:\d{2}$/.test(rule.end))throw Error('Invalid time format');
-    rules.set(rule.day,{start:rule.start,end:rule.end});
+  const monthly=b.recurrenceType==='monthly';
+  let rules=new Map(),monthlyRule=null;
+  if(monthly){
+    const r=b.monthlyRule||{};
+    if(!WEEKDAYS.includes(r.day)||![1,2,3,4,-1].includes(Number(r.ordinal))||!/^\d{2}:\d{2}$/.test(r.start||'')||!/^\d{2}:\d{2}$/.test(r.end||''))throw Error('Choose a valid monthly occurrence, weekday, and time range.');
+    monthlyRule={...r,ordinal:Number(r.ordinal)};
+  }else{
+    if(!Array.isArray(b.days)||!b.days.length||b.days.length>7)throw Error('Choose at least one weekday.');
+    for(const rule of b.days){
+      if(!WEEKDAYS.includes(rule.day)||rules.has(rule.day))throw Error('Invalid or duplicate weekday');
+      if(!/^\d{2}:\d{2}$/.test(rule.start)||!/^\d{2}:\d{2}$/.test(rule.end))throw Error('Invalid time format');
+      rules.set(rule.day,{start:rule.start,end:rule.end});
+    }
   }
   const out=[];
   for(let d=first;d<=last;d=d.plus({days:1})){
-    const rule=rules.get(WEEKDAYS[d.weekday%7]);
+    const day=WEEKDAYS[d.weekday%7];
+    let rule=monthly?monthlyRule:rules.get(day);
     if(!rule)continue;
+    if(monthly){
+      if(day!==monthlyRule.day)continue;
+      const occurrence=Math.floor((d.day-1)/7)+1;
+      const lastOfMonth=d.plus({days:7}).month!==d.month;
+      if(monthlyRule.ordinal===-1?!lastOfMonth:occurrence!==monthlyRule.ordinal)continue;
+    }
     const date=d.toISODate();
     const {a,b:finish}=dateRange(date,rule.start,rule.end);
     out.push({date,start:rule.start,end:rule.end,partitionKey:partition(b.resource,date),keys:slots(a,finish)});
@@ -119,7 +133,7 @@ app.http('seriesRequests',{methods:['POST'],authLevel:'anonymous',route:'series/
       inserted.push(r);
       await table().createEntity(r);
     }
-    const schedule=b.days.map(x=>`${x.day}: ${x.start}–${x.end}`).join('; ');
+    const schedule=b.recurrenceType==='monthly'?`${b.monthlyRule.ordinal===-1?'Last':['','1st','2nd','3rd','4th'][Number(b.monthlyRule.ordinal)]} ${b.monthlyRule.day} of each month: ${b.monthlyRule.start}–${b.monthlyRule.end}`:b.days.map(x=>`${x.day}: ${x.start}–${x.end}`).join('; ');
     const approvers=(process.env.APPROVER_EMAILS||'').split(',').map(x=>x.trim()).filter(Boolean);
     await mail(approvers,'NPHC recurring facility request awaiting approval',`<p>New recurring request from ${escape(name)} (${escape(organization)}).</p><p>${escape(b.resource)}: ${escape(b.rangeStart)} through ${escape(b.rangeEnd)} (${plan.length} occurrences)</p><p>${escape(schedule)}</p><p>${escape(description)}</p><p><a href="${escape(process.env.PUBLIC_BASE_URL||'')}/?admin=1">Review approval dashboard</a></p>`).catch(console.error);
     await mail([email],'NPHC recurring reservation request received',`<p>Thank you ${escape(name)}. Your ${plan.length}-date recurring request for ${escape(b.resource)} is pending approval for up to 48 hours.</p><p>Reference: ${seriesId}</p>`).catch(console.error);
