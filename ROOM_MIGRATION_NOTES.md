@@ -1,19 +1,49 @@
-# NPHC Room Catalog Update — Migration Notes
+# Final room mapping and archive procedure
 
-The public resource list has 11 rooms. Room 258 is unavailable for public requests, enforced in both availability and submission APIs.
+The active application recognizes **only the 11 approved room/resource names**. Room 258 is unavailable for public bookings. The former Dance Studio maps to **202 A - Khloverleaf Dance Academy and Multipurpose Room** via its existing storage partition.
 
-## Preserved historical partition IDs
+The following resources have **no replacement** and must be archived, not reassigned:
 
-- Main Large Conference Room -> Room 201 (partition 0)
-- Dance Studio -> Room 202 A (partition 1)
-- STEM Lab -> Room 256 (partition 2)
-- Legacy Lounge -> Room 250 (partition 3)
-- Computer Lab -> Room 255 (partition 8)
+- Meeting Room 1
+- Meeting Room 2
+- Meeting Room 3
+- Meeting Room 4
+- Outdoor Courtyard
 
-The old names remain in historical records; existing slot holds in these partitions are respected by the new names.
+## Important: deployment does not automatically migrate Azure Tables
 
-## Manual review required
+To avoid unexpected deletion of live data, the supplied archive utility is **dry-run by default**. Until you run the archive, the retired records remain in `NphcReservations` but are hidden from the calendar and approver dashboard. Their old slot records may still exist; these partition IDs are not reused for new rooms.
 
-The former Meeting Room 1–4 and Outdoor Courtyard do not have an explicit confirmed mapping to the new numbered rooms. Existing reservations for these spaces remain stored and visible under their original names, but do not automatically block new room numbers. **Before accepting new bookings**, review existing reservations for these five legacy spaces and identify their correct destination rooms. Do not delete Azure Table entities or change partition keys manually without a tested migration.
+1. Back up/export `NphcReservations` and `NphcSlots` before making changes.
+2. Open a terminal in the `api` folder with `STORAGE_CONNECTION_STRING` set securely in the environment (do not commit it or paste it into chat).
+3. Install dependencies with `npm install` if needed.
+4. Preview: `node ../scripts/archive-retired-reservations.mjs`.
+5. Review the output; apply only when satisfied: `node ../scripts/archive-retired-reservations.mjs --apply`.
+6. Verify that records were copied to `NphcArchivedReservations` and no retired records remain in `NphcReservations`.
 
-Room 258 is intentionally unavailable for public reservations; no synthetic perpetual reservation is written to Azure Tables. Approvers may review historical events, but a future admin override requires a separate explicitly authorized change.
+The archive retains original room names **only inside the separate audit/archive table**, where they are needed to faithfully preserve historical records. They are not displayed in the app. The script copies and verifies each record before removing its original and associated owned slots. Re-running is safe for already archived records. Azure Tables operations across multiple tables are not atomic; inspect any reported errors before retrying.
+
+**Do not** import the retired bookings as active reservations: the user confirmed these resources have no equivalent. The original Google Calendar migration is a separate task.
+
+## Preserve former Dance Studio reservations (REQUIRED)
+
+**Dance Studio is NOT a retired resource.** Every existing reservation, including all
+Khloverleaf Dance Academy dates and recurring occurrences, must remain active.
+The backend temporarily recognizes existing Dance Studio records in storage partition `1_`
+as Room 202 A, so approved reservations continue appearing and blocking their times.
+
+After backing up `NphcReservations` and `NphcSlots`, run from the `api` directory
+with `STORAGE_CONNECTION_STRING` set securely:
+
+```sh
+node ../scripts/migrate-dance-studio.mjs
+node ../scripts/migrate-dance-studio.mjs --apply
+```
+
+The script changes **only** the resource label to
+`202 A - Khloverleaf Dance Academy and Multipurpose Room`. It preserves the
+reservation ID, partition, time-slot claims, dates, statuses, recurrence metadata,
+and requester details. It is safe to rerun. Do not archive Dance Studio bookings.
+
+Then separately run the retired-room archive script (dry-run first).
+No Azure data migration is performed merely by deploying the ZIP.
