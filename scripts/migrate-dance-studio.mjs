@@ -4,12 +4,12 @@ import { TableClient } from '@azure/data-tables';
 const conn=process.env.STORAGE_CONNECTION_STRING;
 if(!conn){console.error('Set STORAGE_CONNECTION_STRING securely before running.');process.exit(1)}
 const client=TableClient.fromConnectionString(conn,'NphcReservations');
-const old='Dance Studio';
-const updated='202 A - Khloverleaf Dance Academy and Multipurpose Room';
+const oldNames=new Set(['Dance Studio','202 A - Khloverleaf Dance Academy and Multipurpose Room']);
+const updated='202 A - Klohverleaf Dance Academy and Multipurpose Room';
 const apply=process.argv.includes('--apply');
 const matches=[];
-for await(const r of client.listEntities())if(r.resource===old)matches.push(r);
-console.log(`${apply?'APPLY':'DRY RUN'}: ${matches.length} Dance Studio reservations to preserve and rename`);
+for await(const r of client.listEntities())if(oldNames.has(r.resource))matches.push(r);
+console.log(`${apply?'APPLY':'DRY RUN'}: ${matches.length} legacy Dance Studio / misspelled reservations to preserve and rename`);
 for(const r of matches)console.log(`${r.partitionKey}/${r.rowKey} | ${r.date} ${r.start}-${r.end} | ${r.status} | ${r.organization||''}`);
 if(!apply){console.log('No changes made. Back up NphcReservations and NphcSlots, then rerun with --apply.');process.exit(0)}
 let changed=0,errors=0;

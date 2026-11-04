@@ -3,7 +3,7 @@
 A public calendar, anonymous room reservation requests, conflict-safe temporary holds, email notifications, and a secure approver dashboard. Built for Azure Static Web Apps + GitHub.
 
 ## Resources
-Main Large Conference Room, Dance Studio, STEM Lab, Legacy Lounge, Meeting Rooms 1–4, Computer Lab, Outdoor Courtyard.
+11 current room/resource names are defined in `src/main.jsx` and `api/src/functions/app.js`. Room 202 A is Klohverleaf Dance Academy and Multipurpose Room. Room 258 is not available for public booking.
 
 ## Architecture
 - Vite + React frontend, built into `dist`.

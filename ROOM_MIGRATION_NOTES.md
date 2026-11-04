@@ -1,6 +1,6 @@
 # Final room mapping and archive procedure
 
-The active application recognizes **only the 11 approved room/resource names**. Room 258 is unavailable for public bookings. The former Dance Studio maps to **202 A - Khloverleaf Dance Academy and Multipurpose Room** via its existing storage partition.
+The active application recognizes **only the 11 approved room/resource names**. Room 258 is unavailable for public bookings. The former Dance Studio maps to **202 A - Klohverleaf Dance Academy and Multipurpose Room** via its existing storage partition.
 
 The following resources have **no replacement** and must be archived, not reassigned:
 
@@ -28,7 +28,7 @@ The archive retains original room names **only inside the separate audit/archive
 ## Preserve former Dance Studio reservations (REQUIRED)
 
 **Dance Studio is NOT a retired resource.** Every existing reservation, including all
-Khloverleaf Dance Academy dates and recurring occurrences, must remain active.
+Klohverleaf Dance Academy dates and recurring occurrences, must remain active.
 The backend temporarily recognizes existing Dance Studio records in storage partition `1_`
 as Room 202 A, so approved reservations continue appearing and blocking their times.
 
@@ -41,7 +41,7 @@ node ../scripts/migrate-dance-studio.mjs --apply
 ```
 
 The script changes **only** the resource label to
-`202 A - Khloverleaf Dance Academy and Multipurpose Room`. It preserves the
+`202 A - Klohverleaf Dance Academy and Multipurpose Room`. It preserves the
 reservation ID, partition, time-slot claims, dates, statuses, recurrence metadata,
 and requester details. It is safe to rerun. Do not archive Dance Studio bookings.
 
