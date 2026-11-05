@@ -5,6 +5,8 @@ import argparse, json, os, hashlib, datetime as dt, uuid, pathlib, sys
 from collections import defaultdict
 from azure.identity import DefaultAzureCredential
 from azure.data.tables import TableServiceClient, UpdateMode
+from azure.core.exceptions import ResourceNotFoundError, ResourceExistsError
+from azure.core import MatchConditions
 
 ROOT=pathlib.Path(__file__).resolve().parent
 ROOMS={
@@ -58,10 +60,16 @@ def main():
  by_slot={(s['PartitionKey'],s['RowKey']):s for s in existing_slots}
  removals={}; inserts=[];duplicates=0
  for e in normalized:
-  matching=[r for r in by_pk[e['partitionKey']] if r.get('start')==e['start'] and r.get('end')==e['end'] and r.get('resource')==e['resource'] and r.get('description')==e['description']]
-  if matching:duplicates+=1;continue
+  matching=[r for r in by_pk[e['partitionKey']] if r.get('migrationSource')=='google-calendar' and r.get('start')==e['start'] and r.get('end')==e['end'] and r.get('resource')==e['resource'] and r.get('description')==e['description']]
+  if matching:
+   # A reservation without all of its slots is an incomplete prior import, not a duplicate.
+   if all(by_slot.get((e['partitionKey'],k),{}).get('reservationId')==matching[0]['RowKey'] for k in e['keys']):
+    duplicates+=1;continue
+   raise SystemExit(f'Incomplete previously imported Google reservation: {matching[0]["RowKey"]}; manual repair required')
   for r in by_pk[e['partitionKey']]:
    if r.get('status') in ('expired','declined','revoked'):continue
+   if r.get('migrationSource')=='google-calendar':
+    raise SystemExit(f'Conflicting previously imported Google reservation: {r["RowKey"]}')
    if hhmm(r.get('start','00:00'))<hhmm(e['end']) and hhmm(e['start'])<hhmm(r.get('end','00:00')):
     removals[(r['PartitionKey'],r['RowKey'])]=r
   for k in e['keys']:
@@ -75,11 +83,13 @@ def main():
  if not a.apply:return
  # Private downloadable backup artifact must exist before destructive changes.
  backup={'exportedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'reservations':existing,'slots':existing_slots}
- backup_path=ROOT/'google-migration-backup.json'
+ backup_path=pathlib.Path(os.environ.get('RUNNER_TEMP',str(ROOT)))/'google-migration-backup.json'
  backup_path.write_text(json.dumps(backup,default=str,indent=2));os.chmod(backup_path,0o600)
  print('BACKUP_SHA256',hashlib.sha256(backup_path.read_bytes()).hexdigest(),flush=True)
  # Archive each displaced reservation first. Existing archived records are retained.
- archive=client.get_table_client('NphcArchivedReservations');archive.create_table() if not any(t.name=='NphcArchivedReservations' for t in client.list_tables()) else None
+ archive=client.get_table_client('NphcArchivedReservations')
+ try:archive.create_table()
+ except ResourceExistsError:pass
  for r in removals.values():
   data={k:v for k,v in r.items() if k not in ('etag','Timestamp','timestamp')}
   data.update(archivedAt=dt.datetime.now(dt.timezone.utc).isoformat(),archiveReason='Superseded by approved Google Calendar migration')
@@ -88,8 +98,13 @@ def main():
   for k in json.loads(r.get('slotKeys') or '[]'):
    s=by_slot.get((r['PartitionKey'],k))
    if s and s.get('reservationId')==r['RowKey']:
-    try:slots.delete_entity(r['PartitionKey'],k,etag=s.metadata.get('etag'),match_condition='IfNotModified')
+    try:slots.delete_entity(r['PartitionKey'],k,etag=s.metadata.get('etag'),match_condition=MatchConditions.IfNotModified)
     except Exception as exc:raise RuntimeError(f'Failed releasing owned slot {k}: {exc}')
+  # Also release any slots owned by this reservation, even if slotKeys is stale.
+  for s in existing_slots:
+   if s['PartitionKey']==r['PartitionKey'] and s.get('reservationId')==r['RowKey']:
+    try:slots.delete_entity(s['PartitionKey'],s['RowKey'])
+    except ResourceNotFoundError:pass
   reservations.delete_entity(r['PartitionKey'],r['RowKey'])
  # Preserve deterministic IDs so reruns can reconcile partial imports.
  for e in inserts:
@@ -97,10 +112,22 @@ def main():
   existing_one=next((r for r in by_pk[e['partitionKey']] if r['RowKey']==rid),None)
   if existing_one:continue
   now=dt.datetime.now(dt.timezone.utc).isoformat()
-  for k in e['keys']:
-   try:slots.create_entity({'PartitionKey':e['partitionKey'],'RowKey':k,'reservationId':rid})
-   except Exception as exc:raise RuntimeError(f'Unable to claim {e["partitionKey"]}/{k}; stopped without overwriting slot: {exc}')
-  reservations.create_entity({'PartitionKey':e['partitionKey'],'RowKey':rid,'name':'Bruce Nelson','email':'nphcoperations@gmail.com','phone':'','organization':'NPHC-HC','description':e['description'],'resource':e['resource'],'date':e['date'],'start':e['start'],'end':e['end'],'status':e.get('status','approved'),'createdAt':now,'slotKeys':json.dumps(e['keys']),'migrationSource':'google-calendar'})
+  # Slots are created in a single partition-atomic transaction, as in the deployed API.
+  # On reservation creation failure, remove only slots owned by this import.
+  slot_entities=[{'PartitionKey':e['partitionKey'],'RowKey':k,'reservationId':rid} for k in e['keys']]
+  try:
+   slots.submit_transaction([('create',entity) for entity in slot_entities])
+  except Exception as exc:
+   raise RuntimeError(f'Unable to claim slots for {e["partitionKey"]}; no slots were intentionally overwritten: {exc}')
+  try:
+   reservations.create_entity({'PartitionKey':e['partitionKey'],'RowKey':rid,'name':'Bruce Nelson','email':'nphcoperations@gmail.com','phone':'','organization':'NPHC-HC','description':e['description'],'resource':e['resource'],'date':e['date'],'start':e['start'],'end':e['end'],'status':e.get('status','approved'),'createdAt':now,'slotKeys':json.dumps(e['keys']),'migrationSource':'google-calendar'})
+  except Exception:
+   for k in e['keys']:
+    try:
+     owned=slots.get_entity(e['partitionKey'],k)
+     if owned.get('reservationId')==rid:slots.delete_entity(e['partitionKey'],k)
+    except ResourceNotFoundError:pass
+   raise
  print('Migration completed. No notification emails sent.')
 
 if __name__=='__main__':main()
