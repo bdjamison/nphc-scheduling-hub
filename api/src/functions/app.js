@@ -203,3 +203,103 @@ app.http('decision',{methods:['POST'],authLevel:'anonymous',route:'approvals/dec
  return response(200,{status:b.decision});
  }catch(e){console.error(e);return response(e.statusCode===412?409:500,{error:e.statusCode===412?'Another approver already acted on this request.':'Unable to process decision'});}
 }});
+
+
+// Approver-only editing. Existing occurrences are retained as revision history when moved.
+const auditTable=()=>TableClient.fromConnectionString(process.env.STORAGE_CONNECTION_STRING,'NphcReservationAudit');
+const editDateRange=(date,start,end)=>{
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!/^\d{2}:\d{2}$/.test(start)||!/^\d{2}:\d{2}$/.test(end))throw Error('Invalid date or time');
+ const a=DateTime.fromISO(`${date}T${start}`,{zone:TZ}),b=DateTime.fromISO(`${date}T${end}`,{zone:TZ});
+ if(!a.isValid||!b.isValid||a.toISODate()!==date||b.toISODate()!==date||b<=a||a.second||b.second)throw Error('Choose valid same-day times');
+ return {a,b};
+};
+const editKeys=(date,start,end)=>{const {a,b}=editDateRange(date,start,end);const keys=[];let t=a.startOf('hour').plus({minutes:a.minute>=30?30:0});while(t<b){keys.push(t.toFormat('HHmm'));t=t.plus({minutes:30});}return keys;};
+const editPlan=b=>{
+ const first=DateTime.fromISO(b.rangeStart,{zone:TZ}),last=DateTime.fromISO(b.rangeEnd,{zone:TZ});
+ if(!first.isValid||!last.isValid||first.toISODate()!==b.rangeStart||last.toISODate()!==b.rangeEnd||last<first||last.diff(first,'days').days>366)throw Error('Invalid recurring range (maximum 1 year)');
+ const monthly=b.recurrenceType==='monthly',rules=new Map();
+ if(monthly){const r=b.monthlyRule;if(!r||!WEEKDAYS.includes(r.day)||![1,2,3,4,-1].includes(Number(r.ordinal)))throw Error('Invalid monthly rule');}
+ else{if(!Array.isArray(b.days)||!b.days.length||b.days.length>7)throw Error('Select weekdays');for(const r of b.days){if(!WEEKDAYS.includes(r.day)||rules.has(r.day))throw Error('Invalid weekday');rules.set(r.day,r);}}
+ const result=[];
+ for(let d=first;d<=last;d=d.plus({days:1})){
+  const day=WEEKDAYS[d.weekday%7];let rule=monthly?b.monthlyRule:rules.get(day);if(!rule)continue;
+  if(monthly){if(day!==rule.day)continue;const nth=Math.floor((d.day-1)/7)+1;const isLast=d.plus({days:7}).month!==d.month;if(Number(rule.ordinal)===-1?!isLast:nth!==Number(rule.ordinal))continue;}
+  const date=d.toISODate();editDateRange(date,rule.start,rule.end);result.push({date,start:rule.start,end:rule.end});
+ }
+ if(!result.length||result.length>366)throw Error('Invalid recurring occurrence count');return result;
+};
+const editFields=(b,r)=>{
+ const resource=String(b.resource||''),organization=sanitize(b.organization),description=sanitize(b.description),name=sanitize(b.name),email=normalizedEmail(b.email),phone=sanitize(b.phone);
+ if(!resources.includes(resource)||unavailableResource(resource))throw Error('Choose an available room');
+ if(!organization||!description||!name||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!phone)throw Error('Complete all requester and reservation fields');
+ return {resource,organization,description,name,email,phone};
+};
+const slotOwner=async(p,key)=>{try{return await slotTable().getEntity(p,key)}catch(e){if(e.statusCode===404)return null;throw e}};
+const writeAudit=async(old,updated,actor,scope,operation)=>{try{await auditTable().createTable().catch(e=>{if(e.statusCode!==409)throw e});await auditTable().createEntity({partitionKey:'changes',rowKey:randomUUID(),reservationId:old.rowKey,seriesId:old.seriesId||'',actor,scope,operation,changedAt:DateTime.now().setZone(TZ).toISO(),before:JSON.stringify({date:old.date,start:old.start,end:old.end,resource:old.resource,organization:old.organization,name:old.name,email:old.email,phone:old.phone,description:old.description}),after:JSON.stringify({date:updated.date,start:updated.start,end:updated.end,resource:updated.resource,organization:updated.organization,name:updated.name,email:updated.email,phone:updated.phone,description:updated.description})})}catch(e){console.error('Audit write failed',e)}};
+const sendEditEmail=async(old,updated,scope)=>{
+ const lines=['date','start','end','resource','organization','description','name','email','phone'].filter(k=>String(old[k]||'')!==String(updated[k]||'')).map(k=>`<tr><th style="text-align:left;padding:6px">${escape(k)}</th><td style="padding:6px">${escape(old[k]||'—')}</td><td style="padding:6px">${escape(updated[k]||'—')}</td></tr>`).join('');
+ const html=`<p>Your NPHC Community Center reservation was updated by an authorized approver.</p><p><b>Applies to:</b> ${escape(scope)}</p><table border="1" cellspacing="0" cellpadding="4"><tr><th>Field</th><th>Previous</th><th>Updated</th></tr>${lines||'<tr><td colspan="3">Recurring schedule updated</td></tr>'}</table><p>For questions, contact the community center.</p>`;
+ const recipients=[...new Set([normalizedEmail(old.email),normalizedEmail(updated.email)].filter(x=>/^\S+@\S+\.\S+$/.test(x)))];
+ if(!process.env.ACS_CONNECTION_STRING||!process.env.MAIL_FROM)throw Error('Email delivery is not configured');
+ await mail(recipients,'NPHC reservation updated',html);
+};
+// Preflight every target before writing anything. Prevent collision with records outside the edit set.
+const preflightEdits=async(targets,proposals)=>{
+ const owned=new Set(targets.map(r=>r.partitionKey+'|'+r.rowKey));const conflicts=[];
+ for(let i=0;i<proposals.length;i++){
+  const r=targets[i],v=proposals[i],p=partition(v.resource,v.date),keys=editKeys(v.date,v.start,v.end);
+  for(const k of keys){const slot=await slotOwner(p,k);if(slot&&!owned.has(p+'|'+slot.reservationId)){conflicts.push({date:v.date,start:v.start,end:v.end,resource:v.resource});break;}}
+ }
+ for(let i=0;i<proposals.length;i++)for(let j=i+1;j<proposals.length;j++){
+  const a=proposals[i],b=proposals[j];if(a.date===b.date&&a.resource===b.resource&&a.start<b.end&&b.start<a.end)conflicts.push({date:a.date,start:a.start,end:a.end,resource:a.resource});
+ }
+ return conflicts;
+};
+const applyEdit=async(old,v,actor,scope)=>{
+ const p=partition(v.resource,v.date),keys=editKeys(v.date,v.start,v.end),samePartition=p===old.partitionKey;
+ const oldKeys=JSON.parse(old.slotKeys||'[]'),oldKeySet=new Set(oldKeys);
+ const newId=samePartition?old.rowKey:randomUUID();
+ const created=[];
+ try{
+  for(const key of keys){if(samePartition&&oldKeySet.has(key))continue;await slotTable().createEntity({partitionKey:p,rowKey:key,reservationId:newId});created.push(key);}
+  const next={...old,...v,partitionKey:p,rowKey:newId,slotKeys:JSON.stringify(keys),updatedAt:DateTime.now().setZone(TZ).toISO(),updatedBy:actor};
+  if(samePartition){await table().updateEntity(next,'Replace',{etag:old.etag});}
+  else{
+   await table().createEntity(next);
+   try{await table().updateEntity({...old,status:'superseded',supersededBy:newId,supersededAt:next.updatedAt},'Replace',{etag:old.etag})}
+   catch(e){await table().deleteEntity(p,newId).catch(console.error);throw e;}
+  }
+  // Remove only slots still owned by the previous occurrence.
+  for(const key of oldKeys){if(samePartition&&keys.includes(key))continue;try{const slot=await slotTable().getEntity(old.partitionKey,key);if(slot.reservationId===old.rowKey)await slotTable().deleteEntity(old.partitionKey,key,{etag:slot.etag})}catch(e){if(e.statusCode!==404)console.error('Old slot release failed',e)}}
+  await writeAudit(old,next,actor,scope,samePartition?'update':'move');return next;
+ }catch(e){for(const key of created){try{const slot=await slotTable().getEntity(p,key);if(slot.reservationId===newId)await slotTable().deleteEntity(p,key,{etag:slot.etag})}catch(err){console.error('Edit rollback',err)}}throw e;}
+};
+app.http('editReservation',{methods:['POST'],authLevel:'anonymous',route:'approvals/edit',handler:async req=>{
+ if(!approver(req))return response(403,{error:'Approver access required'});
+ try{
+  await init();const b=await parse(req);if(!b||!['single','future','series'].includes(b.scope))return response(400,{error:'Invalid edit scope'});
+  const old=await table().getEntity(b.partitionKey,b.id);if(!['approved','hold'].includes(old.status))return response(409,{error:'Only approved or HOLD reservations may be edited'});
+  const fields=editFields(b,old),all=await readReservations();
+  let targets=[old];if(b.scope!=='single'){
+   if(!old.seriesId)return response(400,{error:'This reservation has no linked recurring series. Edit this occurrence individually.'});
+   targets=all.filter(r=>r.seriesId===old.seriesId&&['approved','hold'].includes(r.status)&&(b.scope==='series'||r.date>=old.date)).sort((a,b)=>a.date.localeCompare(b.date)||a.start.localeCompare(b.start));
+  }
+  let proposals=[];
+  if(b.scope==='single'){editDateRange(b.date,b.start,b.end);proposals=[{...fields,date:b.date,start:b.start,end:b.end}];}
+  else{
+   const plan=editPlan(b);const retained=all.filter(r=>r.seriesId===old.seriesId&&['approved','hold'].includes(r.status)&&!targets.some(t=>t.partitionKey===r.partitionKey&&t.rowKey===r.rowKey));
+   if(plan.some(x=>retained.some(r=>r.date===x.date&&r.resource===fields.resource&&r.start<x.end&&x.start<r.end)))return response(409,{error:'Edited schedule overlaps an unchanged occurrence of this series'});
+   if(plan.length!==targets.length)return response(400,{error:`This edit changes the number of occurrences (${targets.length} existing vs ${plan.length} proposed). To prevent accidental deletion or creation, edit the series using a matching occurrence count or request the schedule-rebuild feature.`});
+   proposals=plan.map(x=>({...fields,...x}));
+  }
+  const conflicts=await preflightEdits(targets,proposals);if(conflicts.length)return response(409,{error:'Requested room or time conflicts with existing reservations',conflicts});
+  const actor=identity(req)?.userDetails||'Approver',changes=[];
+  for(let i=0;i<targets.length;i++){
+   try{changes.push(await applyEdit(targets[i],proposals[i],actor,b.scope))}
+   catch(e){return response(409,{error:`Updated ${changes.length} of ${targets.length} occurrences. Remaining changes were not applied: ${e.message}`,updated:changes.length,total:targets.length});}
+  }
+  let emailSent=false,emailError='';
+  try{await sendEditEmail(targets[0],changes[0],b.scope);emailSent=true}catch(e){emailError=e.message;console.error('Reservation edit notification failed',e)}
+  return response(200,{updated:changes.length,emailSent,emailError});
+ }catch(e){console.error('Edit reservation failed',e);return response([404,409,412].includes(e.statusCode)?409:400,{error:e.message||'Unable to edit reservation'});}
+}});
