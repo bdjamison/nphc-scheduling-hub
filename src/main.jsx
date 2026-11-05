@@ -28,6 +28,8 @@ const foundingColors={
 const reservationPalette=(organization)=>{
  const o=String(organization||'').normalize('NFKC').toLowerCase();
  const match=(...terms)=>terms.some(t=>o.includes(t));
+ // Klohverleaf Dance Academy: warm brown, blush pink and ballet-shoe gold based on website logo.
+ if(match('klohverleaf dance academy','klohverlleaf dance academy'))return {bg:'#FFF0F0',fg:'#713415',accent:'#B96B12'};
  // NPHC Howard County meeting cards: black primary, white secondary.
  if(/\bnphc\s*[-–—]?\s*hc\b/.test(o)||o.includes('national pan-hellenic council of howard county'))return {bg:'#000000',fg:'#FFFFFF',accent:'#FFFFFF'};
  if(match('alpha kappa alpha','ακα','aka -','aka –'))return {bg:'#F6A8B7',fg:'#123D26',accent:'#237A44'};
