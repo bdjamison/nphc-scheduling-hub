@@ -210,7 +210,7 @@ const auditTable=()=>TableClient.fromConnectionString(process.env.STORAGE_CONNEC
 const editDateRange=(date,start,end)=>{
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!/^\d{2}:\d{2}$/.test(start)||!/^\d{2}:\d{2}$/.test(end))throw Error('Invalid date or time');
  const a=DateTime.fromISO(`${date}T${start}`,{zone:TZ}),b=DateTime.fromISO(`${date}T${end}`,{zone:TZ});
- if(!a.isValid||!b.isValid||a.toISODate()!==date||b.toISODate()!==date||b<=a||a.second||b.second)throw Error('Choose valid same-day times');
+ if(!a.isValid||!b.isValid||a.toISODate()!==date||b.toISODate()!==date||b<=a||a.second||b.second||a.minute%15||b.minute%15)throw Error('Choose valid same-day times in 15-minute increments');
  return {a,b};
 };
 const editKeys=(date,start,end)=>{const {a,b}=editDateRange(date,start,end);const keys=[];let t=a.startOf('hour').plus({minutes:a.minute>=30?30:0});while(t<b){keys.push(t.toFormat('HHmm'));t=t.plus({minutes:30});}return keys;};
@@ -231,14 +231,14 @@ const editPlan=b=>{
 const editFields=(b,r)=>{
  const resource=String(b.resource||''),organization=sanitize(b.organization),description=sanitize(b.description),name=sanitize(b.name),email=normalizedEmail(b.email),phone=sanitize(b.phone);
  if(!resources.includes(resource)||unavailableResource(resource))throw Error('Choose an available room');
- if(!organization||!description||!name||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!phone)throw Error('Complete all requester and reservation fields');
+ if(!organization||!description||!name||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||( !phone && r.migrationSource!=='google-calendar'))throw Error('Complete all requester and reservation fields');
  return {resource,organization,description,name,email,phone};
 };
 const slotOwner=async(p,key)=>{try{return await slotTable().getEntity(p,key)}catch(e){if(e.statusCode===404)return null;throw e}};
 const writeAudit=async(old,updated,actor,scope,operation)=>{try{await auditTable().createTable().catch(e=>{if(e.statusCode!==409)throw e});await auditTable().createEntity({partitionKey:'changes',rowKey:randomUUID(),reservationId:old.rowKey,seriesId:old.seriesId||'',actor,scope,operation,changedAt:DateTime.now().setZone(TZ).toISO(),before:JSON.stringify({date:old.date,start:old.start,end:old.end,resource:old.resource,organization:old.organization,name:old.name,email:old.email,phone:old.phone,description:old.description}),after:JSON.stringify({date:updated.date,start:updated.start,end:updated.end,resource:updated.resource,organization:updated.organization,name:updated.name,email:updated.email,phone:updated.phone,description:updated.description})})}catch(e){console.error('Audit write failed',e)}};
-const sendEditEmail=async(old,updated,scope)=>{
+const sendEditEmail=async(old,updated,scope,counts={})=>{
  const lines=['date','start','end','resource','organization','description','name','email','phone'].filter(k=>String(old[k]||'')!==String(updated[k]||'')).map(k=>`<tr><th style="text-align:left;padding:6px">${escape(k)}</th><td style="padding:6px">${escape(old[k]||'—')}</td><td style="padding:6px">${escape(updated[k]||'—')}</td></tr>`).join('');
- const html=`<p>Your NPHC Community Center reservation was updated by an authorized approver.</p><p><b>Applies to:</b> ${escape(scope)}</p><table border="1" cellspacing="0" cellpadding="4"><tr><th>Field</th><th>Previous</th><th>Updated</th></tr>${lines||'<tr><td colspan="3">Recurring schedule updated</td></tr>'}</table><p>For questions, contact the community center.</p>`;
+ const html=`<p>Your NPHC Community Center reservation was updated by an authorized approver.</p><p><b>Applies to:</b> ${escape(scope)}</p><p>Occurrences updated: ${Number(counts.updated||0)}; added: ${Number(counts.added||0)}; removed: ${Number(counts.removed||0)}.</p><table border="1" cellspacing="0" cellpadding="4"><tr><th>Field</th><th>Previous</th><th>Updated</th></tr>${lines||'<tr><td colspan="3">Recurring schedule updated</td></tr>'}</table><p>For questions, contact the community center.</p>`;
  const recipients=[...new Set([normalizedEmail(old.email),normalizedEmail(updated.email)].filter(x=>/^\S+@\S+\.\S+$/.test(x)))];
  if(!process.env.ACS_CONNECTION_STRING||!process.env.MAIL_FROM)throw Error('Email delivery is not configured');
  await mail(recipients,'NPHC reservation updated',html);
@@ -284,22 +284,51 @@ app.http('editReservation',{methods:['POST'],authLevel:'anonymous',route:'approv
    if(!old.seriesId)return response(400,{error:'This reservation has no linked recurring series. Edit this occurrence individually.'});
    targets=all.filter(r=>r.seriesId===old.seriesId&&['approved','hold'].includes(r.status)&&(b.scope==='series'||r.date>=old.date)).sort((a,b)=>a.date.localeCompare(b.date)||a.start.localeCompare(b.start));
   }
-  let proposals=[];
-  if(b.scope==='single'){editDateRange(b.date,b.start,b.end);proposals=[{...fields,date:b.date,start:b.start,end:b.end}];}
-  else{
-   const plan=editPlan(b);const retained=all.filter(r=>r.seriesId===old.seriesId&&['approved','hold'].includes(r.status)&&!targets.some(t=>t.partitionKey===r.partitionKey&&t.rowKey===r.rowKey));
-   if(plan.some(x=>retained.some(r=>r.date===x.date&&r.resource===fields.resource&&r.start<x.end&&x.start<r.end)))return response(409,{error:'Edited schedule overlaps an unchanged occurrence of this series'});
-   if(plan.length!==targets.length)return response(400,{error:`This edit changes the number of occurrences (${targets.length} existing vs ${plan.length} proposed). To prevent accidental deletion or creation, edit the series using a matching occurrence count or request the schedule-rebuild feature.`});
-   proposals=plan.map(x=>({...fields,...x}));
+  const actor=identity(req)?.userDetails||'Approver';
+  let matched=[],additions=[],removals=[];
+  if(b.scope==='single'){
+   editDateRange(b.date,b.start,b.end);
+   matched=[{old,proposal:{...fields,date:b.date,start:b.start,end:b.end}}];
+  }else{
+   const plan=editPlan(b),proposals=plan.map(x=>({...fields,...x}));
+   const retained=all.filter(r=>r.seriesId===old.seriesId&&['approved','hold'].includes(r.status)&&!targets.some(t=>t.partitionKey===r.partitionKey&&t.rowKey===r.rowKey));
+   if(proposals.some(x=>retained.some(r=>r.date===x.date&&r.resource===x.resource&&r.start<x.end&&x.start<r.end)))return response(409,{error:'Updated schedule overlaps an unchanged occurrence of this series'});
+   const byDate=new Map(targets.map(t=>[t.date,t]));
+   for(const v of proposals){const existing=byDate.get(v.date);if(existing){matched.push({old:existing,proposal:v});byDate.delete(v.date)}else additions.push(v)}
+   removals=[...byDate.values()];
   }
-  const conflicts=await preflightEdits(targets,proposals);if(conflicts.length)return response(409,{error:'Requested room or time conflicts with existing reservations',conflicts});
-  const actor=identity(req)?.userDetails||'Approver',changes=[];
-  for(let i=0;i<targets.length;i++){
-   try{changes.push(await applyEdit(targets[i],proposals[i],actor,b.scope))}
-   catch(e){return response(409,{error:`Updated ${changes.length} of ${targets.length} occurrences. Remaining changes were not applied: ${e.message}`,updated:changes.length,total:targets.length});}
+  // Fail closed when newly added dates overlap any occupied slot, including dates being removed.
+  // This avoids destructive rearrangements and prevents false availability from a planned removal.
+  const testTargets=[...matched.map(x=>x.old),...additions.map(()=>({partitionKey:'__new__',rowKey:'__new__'}))];
+  const testProposals=[...matched.map(x=>x.proposal),...additions];
+  const conflicts=await preflightEdits(testTargets,testProposals);
+  if(conflicts.length)return response(409,{error:'Requested room or time conflicts with existing reservations',conflicts});
+  const changes=[],created=[];
+  const now=DateTime.now().setZone(TZ).toISO();
+  // Add new occurrences first. If an addition fails, remove additions already made.
+  // Never remove an existing occurrence until all additions and edits succeed.
+  try{
+   for(const v of additions){
+    const p=partition(v.resource,v.date),keys=editKeys(v.date,v.start,v.end),id=randomUUID(),claimed=[];
+    try{
+     for(const key of keys){await slotTable().createEntity({partitionKey:p,rowKey:key,reservationId:id});claimed.push(key)}
+     const next={...old,...v,partitionKey:p,rowKey:id,slotKeys:JSON.stringify(keys),seriesId:old.seriesId,status:old.status,createdAt:now,updatedAt:now,updatedBy:actor,rangeStart:b.rangeStart,rangeEnd:b.rangeEnd};
+     delete next.etag;delete next.timestamp;delete next.supersededBy;delete next.supersededAt;
+     await table().createEntity(next);created.push(next);
+     await writeAudit(old,next,actor,b.scope,'series-add');
+    }catch(e){for(const key of claimed)await slotTable().deleteEntity(p,key).catch(console.error);throw e}
+   }
+  }catch(e){for(const r of created){await table().deleteEntity(r.partitionKey,r.rowKey).catch(console.error);await release(r).catch(console.error)}return response(409,{error:'No existing reservations were changed. Could not create a new occurrence: '+e.message})}
+  for(const {old:r,proposal:v} of matched){
+   try{changes.push(await applyEdit(r,{...v,...(b.scope==='single'?{}:{rangeStart:b.rangeStart,rangeEnd:b.rangeEnd})},actor,b.scope))}
+   catch(e){return response(409,{error:`${changes.length} existing occurrence(s) were changed and ${created.length} new ones were added, but the edit stopped: ${e.message}. Review the calendar before retrying.`,updated:changes.length,added:created.length})}
+  }
+  for(const r of removals){
+   try{await table().updateEntity({...r,status:'revoked',updatedAt:now,updatedBy:actor,decisionComments:'Removed by approver recurring schedule edit'},'Replace',{etag:r.etag});await release(r);await writeAudit(r,{...r,status:'revoked'},actor,b.scope,'series-remove')}
+   catch(e){return response(409,{error:`Schedule partly updated, but could not release an obsolete occurrence (${r.date}): ${e.message}. Review the calendar before retrying.`,updated:changes.length,added:created.length})}
   }
   let emailSent=false,emailError='';
-  try{await sendEditEmail(targets[0],changes[0],b.scope);emailSent=true}catch(e){emailError=e.message;console.error('Reservation edit notification failed',e)}
-  return response(200,{updated:changes.length,emailSent,emailError});
+  try{await sendEditEmail(old,changes[0]||created[0]||{...old,...fields},b.scope,{added:additions.length,removed:removals.length,updated:changes.length});emailSent=true}catch(e){emailError=e.message;console.error('Reservation edit notification failed',e)}
+  return response(200,{updated:changes.length,added:created.length,removed:removals.length,emailSent,emailError});
  }catch(e){console.error('Edit reservation failed',e);return response([404,409,412].includes(e.statusCode)?409:400,{error:e.message||'Unable to edit reservation'});}
 }});
