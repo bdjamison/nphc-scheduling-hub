@@ -31,13 +31,13 @@ const parse=async req=>{try{return await req.json()}catch{return null}};
 const identity=req=>{try{return JSON.parse(Buffer.from(req.headers.get('x-ms-client-principal'),'base64').toString())}catch{return null}};
 const approver=req=>identity(req)?.userRoles?.includes('approver')===true;
 const sanitize=s=>String(s||'').trim().slice(0,500);
-const divineNineOrganizations=new Set(["Alpha Kappa Alpha Sorority, Inc.", "Alpha Phi Alpha Fraternity, Inc.", "Delta Sigma Theta Sorority, Inc.", "Iota Phi Theta Fraternity, Inc.", "Kappa Alpha Psi Fraternity, Inc.", "Omega Psi Phi Fraternity, Inc.", "Phi Beta Sigma Fraternity, Inc.", "Sigma Gamma Rho Sorority, Inc.", "Zeta Phi Beta Sorority, Inc."]);
+const divineNineOrganizations=new Set(["Alpha Kappa Alpha Sorority, Inc.", "Alpha Kappa Alpha Sorority, Inc. — Omega Eta Omega Chapter", "Alpha Kappa Alpha Sorority, Inc. — Iota Lambda Omega Chapter", "Alpha Phi Alpha Fraternity, Inc.", "Delta Sigma Theta Sorority, Inc.", "Iota Phi Theta Fraternity, Inc.", "Kappa Alpha Psi Fraternity, Inc.", "Omega Psi Phi Fraternity, Inc.", "Phi Beta Sigma Fraternity, Inc.", "Sigma Gamma Rho Sorority, Inc.", "Zeta Phi Beta Sorority, Inc."]);
 const greekAbbreviations=new Map([
  ['alpha phi alpha','ΑΦΑ'],['alpha kappa alpha','ΑΚΑ'],['delta sigma theta','ΔΣΘ'],
  ['kappa alpha psi','ΚΑΨ'],['omega psi phi','ΩΨΦ'],['phi beta sigma','ΦΒΣ'],
  ['zeta phi beta','ΖΦΒ'],['sigma gamma rho','ΣΓΡ'],['iota phi theta','ΙΦΘ']
 ]);
-const orgAbbreviation=org=>{const n=String(org||'').toLowerCase().replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();for(const [name,abbr] of greekAbbreviations){if(n===name||n.startsWith(name+' '))return abbr;}return String(org||'').trim().slice(0,48)||'Organization not specified';};
+const orgAbbreviation=org=>{const n=String(org||'').toLowerCase().replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();if(n.startsWith('alpha kappa alpha')){if(n.includes('omega eta omega'))return 'ΑΚΑ · ΩΗΩ';if(n.includes('iota lambda omega'))return 'ΑΚΑ · ΙΛΩ';}for(const [name,abbr] of greekAbbreviations){if(n===name||n.startsWith(name+' '))return abbr;}return String(org||'').trim().slice(0,48)||'Organization not specified';};
 const validOrganization=(choice,organization)=>divineNineOrganizations.has(choice)?organization===choice:choice==='Other'&&organization.length>0&&organization.length<=200;
 
 const dateRange=(date,start,end)=>{const a=DateTime.fromISO(`${date}T${start}`,{zone:TZ});const b=DateTime.fromISO(`${date}T${end}`,{zone:TZ});if(!a.isValid||!b.isValid||a.toISODate()!==date||b.toISODate()!==date||b<=a||b.diff(a,'minutes').minutes>1440||a.minute%30||b.minute%30||a.second||b.second)throw Error('Choose valid same-day start and end times in 30-minute increments. Overnight reservations are not supported.');const today=DateTime.now().setZone(TZ).startOf('day');if(a< DateTime.now().setZone(TZ)||a>today.plus({months:18}).endOf('day'))throw Error('Requests must be in the future and within 18 months.');return {a,b};};
