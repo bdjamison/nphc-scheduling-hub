@@ -28,6 +28,8 @@ const foundingColors={
 const reservationPalette=(organization)=>{
  const o=String(organization||'').normalize('NFKC').toLowerCase();
  const match=(...terms)=>terms.some(t=>o.includes(t));
+ // NPHC Howard County meeting cards: black primary, white secondary.
+ if(/\bnphc\s*[-–—]?\s*hc\b/.test(o)||o.includes('national pan-hellenic council of howard county'))return {bg:'#000000',fg:'#FFFFFF',accent:'#FFFFFF'};
  if(match('alpha kappa alpha','ακα','aka -','aka –'))return {bg:'#F6A8B7',fg:'#123D26',accent:'#237A44'};
  if(match('alpha phi alpha','αφα'))return {bg:'#191919',fg:'#F5D269',accent:'#D5AA35'};
  if(match('delta sigma theta','δσθ'))return {bg:'#A6192E',fg:'#FFFFFF',accent:'#FFFFFF'};
