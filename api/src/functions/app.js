@@ -127,8 +127,10 @@ app.http('seriesRequests',{methods:['POST'],authLevel:'anonymous',route:'series/
     if(b.website)return response(200,{message:'Request received'});
     await ensureVerified(b);
     const fullPlan=occurrencePlan(b);
-    if(fullPlan.length>52)throw Error('Public recurring requests are limited to 52 occurrences. Contact an approver for longer series.');
-    if(b.excludeDates!==undefined&&(!Array.isArray(b.excludeDates)||b.excludeDates.length>52||b.excludeDates.some(d=>typeof d!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d))))throw Error('Invalid skipped dates');
+    // The date range is already limited to one calendar year by occurrencePlan().
+    // Multiple weekdays within that year must not be treated as separate years.
+    if(fullPlan.length>366)throw Error('Too many recurring occurrences for a one-year request.');
+    if(b.excludeDates!==undefined&&(!Array.isArray(b.excludeDates)||b.excludeDates.length>366||b.excludeDates.some(d=>typeof d!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d))))throw Error('Invalid skipped dates');
     const skipped=new Set(b.excludeDates||[]);
     if([...skipped].some(d=>!fullPlan.some(item=>item.date===d)))throw Error('Skipped date is outside this recurring series');
     const plan=fullPlan.filter(item=>!skipped.has(item.date));
