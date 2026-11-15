@@ -33,7 +33,7 @@ const reservationPalette=(organization)=>{
  // NPHC Howard County meeting cards: black primary, white secondary.
  if(/\bnphc\s*[-–—]?\s*hc\b/.test(o)||o.includes('national pan-hellenic council of howard county'))return {bg:'#000000',fg:'#FFFFFF',accent:'#FFFFFF'};
  // Iota Lambda Omega: green primary and pink accent; Omega Eta Omega retains pink primary.
- if(match('iota lambda omega','aka - ιλω','aka – ιλω','aka · ιλω','ακα - ιλω','ακα – ιλω','ακα · ιλω','ακα-ιλω','ακα·ιλω'))return {bg:'#166B3B',fg:'#FFFFFF',accent:'#F6A8B7'};
+ if(match('iota lambda omega','aka - ιλω','aka – ιλω','aka · ιλω','ακα - ιλω','ακα – ιλω','ακα · ιλω','ακα-ιλω','ακα·ιλω'))return {bg:'#166B3B',fg:'#F6A8B7',accent:'#F6A8B7'};
  if(match('alpha kappa alpha','ακα','aka -','aka –'))return {bg:'#F6A8B7',fg:'#123D26',accent:'#237A44'};
  if(match('alpha phi alpha','αφα'))return {bg:'#191919',fg:'#F5D269',accent:'#D5AA35'};
  if(match('delta sigma theta','δσθ'))return {bg:'#A6192E',fg:'#FFFFFF',accent:'#FFFFFF'};
