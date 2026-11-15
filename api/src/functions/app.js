@@ -194,6 +194,21 @@ app.http('requests',{methods:['POST'],authLevel:'anonymous',route:'requests',han
 const all=await readReservations();for(const r of all.filter(x=>x.partitionKey===p)){await expire(r);await cleanup(r);}
 const actions=keys.map(k=>['create',{partitionKey:p,rowKey:k,reservationId:id}]);await slotTable().submitTransaction(actions);try{await table().createEntity(entity)}catch(e){await release(entity);throw e}
 const approvers=(process.env.APPROVER_EMAILS||'').split(',').map(x=>x.trim()).filter(Boolean);await mail(approvers,'NPHC facility request awaiting approval',`<p>New request from ${escape(name)} (${escape(organization)}).</p><p>${escape(b.resource)} — ${escape(b.date)} ${escape(b.start)}–${escape(b.end)} ET</p><p>${escape(description)}</p><p>Review: <a href="${escape(process.env.PUBLIC_BASE_URL||'')}/?admin=1">Approval dashboard</a></p>`).catch(console.error);await mail([email],'NPHC reservation request received',`<p>Thank you, ${escape(name)}. Your request for ${escape(b.resource)} on ${escape(b.date)} is pending approval. Your reference number is ${id}.</p>`).catch(console.error);return response(201,{id,status:'pending',message:'Request submitted and held pending approval for up to 48 hours.'})}catch(e){if(e.statusCode===409)return response(409,{error:'That time is already held or booked. Please select another time.'});console.error(e);return response(400,{error:e.message||'Unable to submit request'})}}});
+// Fast, approver-only calendar detail lookup: one entity, no full-table scan.
+app.http('approvalDetail',{methods:['GET'],authLevel:'anonymous',route:'approvals/detail',handler:async(req)=>{
+  if(!approver(req))return response(403,{error:'Approver access required'});
+  try{
+    await init();
+    const id=req.query.get('id'),resource=req.query.get('resource'),date=req.query.get('date');
+    if(!id||id.length>200||!resources.includes(resource)||!/^\d{4}-\d{2}-\d{2}$/.test(date||''))return response(400,{error:'Invalid reservation reference'});
+    const pk=partition(resource,date);
+    let r;
+    try{r=await table().getEntity(pk,id)}catch(e){if(e.statusCode===404)return response(404,{error:'Reservation not found'});throw e}
+    if(r.resource!==resource||r.date!==date||!['approved','hold'].includes(r.status))return response(404,{error:'Reservation is no longer active'});
+    const {slotKeys,...detail}=r;
+    return response(200,{reservation:detail});
+  }catch(e){console.error('Approval detail failed',e);return response(500,{error:'Unable to retrieve reservation details'})}
+}});
 app.http('approvals',{methods:['GET'],authLevel:'anonymous',route:'approvals',handler:async(req)=>{if(!approver(req))return response(403,{error:'Approver access required'});try{await init();const all=(await readReservations()).filter(r=>resources.includes(r.resource));for(const r of all){await expire(r);await cleanup(r);}return response(200,{requests:all.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(({slotKeys,...r})=>r)})}catch(e){return response(500,{error:'Unable to load approvals'})}}});
 app.http('decision',{methods:['POST'],authLevel:'anonymous',route:'approvals/decision',handler:async(req)=>{
  if(!approver(req))return response(403,{error:'Approver access required'});
