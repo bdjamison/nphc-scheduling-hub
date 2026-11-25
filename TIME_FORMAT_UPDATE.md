@@ -1,0 +1,1 @@
+12-hour display update: calendar, approver details, history, conflict displays, recurring schedules, time selection and notification email times use AM/PM. Time selectors retain existing 30-minute request and 15-minute edit increments and preserve off-grid existing values. API values and storage remain HH:mm. Deploy frontend and backend together. No database migration.
